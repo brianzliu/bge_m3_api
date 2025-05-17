@@ -136,28 +136,29 @@ def encode_texts():
         if 'colbert_vecs' in embeddings and embeddings['colbert_vecs'] is not None:
             result['colbert_vecs'] = [vec.tolist() for vec in embeddings['colbert_vecs']]
         
-        # Compute and add pairwise Colbert scores if requested
+        # When compute_colbert_pairwise_scores is true, calculate similarity of each text to the first text.
         if data.get('compute_colbert_pairwise_scores', False) and \
            params['return_colbert_vecs'] and \
            'colbert_vecs' in result and \
-           len(texts) > 1:
+           len(texts) > 1: # Need at least two texts: one query and one candidate
             
-            # The 'colbert_vecs' in embeddings are already in the correct format
-            # (list of individual text Colbert vectors) needed by MODEL.colbert_score
-            colbert_vectors_for_scoring = embeddings['colbert_vecs']
-            num_vectors = len(colbert_vectors_for_scoring)
-            pairwise_scores = []
-            for i in range(num_vectors):
-                for j in range(i + 1, num_vectors):
-                    score = MODEL.colbert_score(colbert_vectors_for_scoring[i], colbert_vectors_for_scoring[j])
-                    # Ensure score is a Python float for JSON serialization
-                    if hasattr(score, 'item'): # Check if it's a PyTorch tensor
-                        score = score.item()
-                    pairwise_scores.append({
-                        "text_indices": [i, j],
-                        "score": score
-                    })
-            result['colbert_pairwise_scores'] = pairwise_scores
+            colbert_vectors_for_scoring = embeddings['colbert_vecs'] # These are the raw Colbert vectors from the model
+            first_text_colbert_vec = colbert_vectors_for_scoring[0]
+            
+            scores_relative_to_first = []
+            for i in range(1, len(colbert_vectors_for_scoring)):
+                candidate_colbert_vec = colbert_vectors_for_scoring[i]
+                score = MODEL.colbert_score(first_text_colbert_vec, candidate_colbert_vec)
+                
+                if hasattr(score, 'item'): # Check if it's a PyTorch tensor and get float
+                    score = score.item()
+                
+                scores_relative_to_first.append({
+                    "query_text_index": 0, # Index of the first text (query)
+                    "candidate_text_index": i, # Index of the current text being compared to the first
+                    "score": score
+                })
+            result['colbert_scores_relative_to_first'] = scores_relative_to_first
             
         return jsonify(result)
         
