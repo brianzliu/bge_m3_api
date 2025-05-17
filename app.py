@@ -136,11 +136,91 @@ def encode_texts():
         if 'colbert_vecs' in embeddings and embeddings['colbert_vecs'] is not None:
             result['colbert_vecs'] = [vec.tolist() for vec in embeddings['colbert_vecs']]
         
+        # Compute and add pairwise Colbert scores if requested
+        if data.get('compute_colbert_pairwise_scores', False) and \
+           params['return_colbert_vecs'] and \
+           'colbert_vecs' in result and \
+           len(texts) > 1:
+            
+            # The 'colbert_vecs' in embeddings are already in the correct format
+            # (list of individual text Colbert vectors) needed by MODEL.colbert_score
+            colbert_vectors_for_scoring = embeddings['colbert_vecs']
+            num_vectors = len(colbert_vectors_for_scoring)
+            pairwise_scores = []
+            for i in range(num_vectors):
+                for j in range(i + 1, num_vectors):
+                    score = MODEL.colbert_score(colbert_vectors_for_scoring[i], colbert_vectors_for_scoring[j])
+                    # Ensure score is a Python float for JSON serialization
+                    if hasattr(score, 'item'): # Check if it's a PyTorch tensor
+                        score = score.item()
+                    pairwise_scores.append({
+                        "text_indices": [i, j],
+                        "score": score
+                    })
+            result['colbert_pairwise_scores'] = pairwise_scores
+            
         return jsonify(result)
         
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/colbert-similarity', methods=['POST'])
+@require_api_key
+@wait_for_model
+def colbert_similarity_to_query():
+    """
+    Computes ColBERT-style similarity scores between a query text and multiple candidate texts.
+    Expects JSON: {"query_text": "...", "candidate_texts": ["...", "..."]}
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid JSON payload"}), 400
+        
+        query_text = data.get('query_text')
+        candidate_texts = data.get('candidate_texts')
+
+        if not query_text or not isinstance(query_text, str):
+            return jsonify({"error": "Missing or invalid 'query_text'"}), 400
+        if not candidate_texts or not isinstance(candidate_texts, list) or not all(isinstance(t, str) for t in candidate_texts):
+            return jsonify({"error": "Missing or invalid 'candidate_texts'"}), 400
+        if not candidate_texts:
+            return jsonify({"scores": []}), 200 # No candidates, return empty scores
+
+        all_texts = [query_text] + candidate_texts
+        
+        # Encode all texts to get Colbert vectors
+        # Only need colbert_vecs, so set others to False for efficiency
+        embeddings_output = MODEL.encode(
+            all_texts, 
+            return_dense=False, 
+            return_sparse=False, 
+            return_colbert_vecs=True
+        )
+        
+        colbert_vecs = embeddings_output.get('colbert_vecs')
+        if not colbert_vecs or len(colbert_vecs) != len(all_texts):
+            logger.error("Failed to get valid Colbert vectors from model encoding.")
+            return jsonify({"error": "Failed to compute Colbert vectors"}), 500
+
+        query_colbert_vec = colbert_vecs[0]
+        candidate_colbert_vecs = colbert_vecs[1:]
+        
+        scores = []
+        for cand_vec in candidate_colbert_vecs:
+            score = MODEL.colbert_score(query_colbert_vec, cand_vec)
+            if hasattr(score, 'item'): # Handle PyTorch tensor
+                score = score.item()
+            scores.append(score)
+            
+        return jsonify({"scores": scores}), 200
+
+    except Exception as e:
+        logger.error(f"Error in /colbert-similarity: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "An internal error occurred"}), 500
 
 # Start model initialization in a separate thread
 def start_model_initialization():

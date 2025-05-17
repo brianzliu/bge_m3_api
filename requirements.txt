@@ -2,4 +2,5 @@ flask
 flask-cors
 FlagEmbedding
 torch
+numpy
 gunicorn
