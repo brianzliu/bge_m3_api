@@ -18,7 +18,20 @@ CORS(app)  # Enable Cross-Origin Resource Sharing
 # Global variables
 MODEL = None
 MODEL_LOADED = threading.Event()
-API_KEYS = set(os.environ.get('ALLOWED_API_KEYS', '').split(','))
+
+# Initialize API_KEYS
+_raw_api_keys_env = os.environ.get('ALLOWED_API_KEYS')
+if _raw_api_keys_env:
+    # Filter out empty strings that can result from splitting an empty string
+    # or strings with just commas, and strip whitespace from keys.
+    API_KEYS = set(key.strip() for key in _raw_api_keys_env.split(',') if key.strip())
+else:
+    # If ALLOWED_API_KEYS is not set or is an empty string,
+    # API_KEYS will be an empty set.
+    # The decorator `require_api_key` will treat an empty API_KEYS set as "no auth required".
+    API_KEYS = set()
+
+logger.info(f"API Keys loaded: {API_KEYS if API_KEYS else 'No API keys configured (open access)'}")
 
 def initialize_bge_m3_model(model_name='BAAI/bge-m3', use_fp16=None, device=None):
     """
@@ -60,11 +73,13 @@ def require_api_key(f):
     """Decorator to require a valid API key for endpoint access"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not API_KEYS or '*' in API_KEYS:  # Skip validation if no keys defined or wildcard is set
+        # If API_KEYS is empty (meaning no keys were configured) or contains '*', allow access.
+        if not API_KEYS or '*' in API_KEYS:
             return f(*args, **kwargs)
             
         api_key = request.headers.get('X-API-Key')
         if api_key not in API_KEYS:
+            logger.warning(f"Access denied: Invalid or missing API key. Provided API key: '{api_key}'. Allowed keys: {API_KEYS}")
             return jsonify({"error": "Invalid or missing API key"}), 401
         return f(*args, **kwargs)
     return decorated_function
@@ -147,9 +162,11 @@ def start_model_initialization():
     thread.daemon = True
     thread.start()
 
+start_model_initialization() # Ensure model initialization starts when module is loaded
+
 if __name__ == '__main__':
     # Start model initialization in background
-    start_model_initialization()
+    # start_model_initialization() # No longer needed here as it's called at module level
     
     # Get port from environment variable or default to 8080
     port = int(os.environ.get('PORT', 8080))
